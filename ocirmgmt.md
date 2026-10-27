@@ -18,8 +18,12 @@ List the images in the repository and copy the OCID of the image you want to del
 
 ```bash
 oci artifacts container image list \
-  --compartment-id $COMPARTMENT_ID \
-  --repository-name $REPOSITORY \
+  --compartment-id "$COMPARTMENT_ID" \
+  --repository-name "$REPOSITORY" \
+  --query 'data.items[].{
+    Image:"display-name",
+    ImageOCID:id
+  }' \
   --output table
 ```
 
