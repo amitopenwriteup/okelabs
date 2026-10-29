@@ -91,7 +91,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: nginx:latest
+          image: docker.io/library/nginx:latest
           ports:
             - containerPort: 80
 ---
