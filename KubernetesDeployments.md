@@ -103,7 +103,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: nginx:1.25
+          image: docker.io/library/nginx:1.25
           ports:
             - name: http
               containerPort: 80
@@ -155,7 +155,7 @@ Update the image:
 
 ```bash
 kubectl set image deployment/web \
-  web=nginx:1.26 \
+  web=docker.io/library/nginx:1.26 \
   --namespace $NAMESPACE
 ```
 
@@ -206,7 +206,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: hashicorp/http-echo:1.0
+          image: docker.io/hashicorp/http-echo:1.0
           args:
             - "-text=Response from backend"
           ports:
@@ -247,7 +247,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: nginx:1.25
+          image: docker.io/library/nginx:1.25
           ports:
             - containerPort: 80
 ---
@@ -276,7 +276,7 @@ Test backend connectivity from a temporary pod:
 ```bash
 kubectl run curl \
   --rm -it \
-  --image=curlimages/curl \
+  --image=docker.io/curlimages/curl \
   --restart=Never \
   -n $NAMESPACE \
   -- curl http://backend:8080
@@ -347,9 +347,9 @@ export OCIR_NAMESPACE=<tenancy_namespace>
 export IMAGE_NAME=oke-lab/web
 export IMAGE_VERSION=1.0
 
-docker pull nginx:1.25
+docker pull docker.io/library/nginx:1.25
 
-docker tag nginx:1.25 \
+docker tag docker.io/library/nginx:1.25 \
   $OCIR_REGISTRY/$OCIR_NAMESPACE/$IMAGE_NAME:$IMAGE_VERSION
 
 docker push \
@@ -785,7 +785,7 @@ spec:
         kubernetes.io/arch: arm64
       containers:
         - name: arm-demo
-          image: arm64v8/nginx:latest
+          image: docker.io/arm64v8/nginx:latest
           ports:
             - containerPort: 80
 ```
@@ -845,7 +845,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: cuda
-      image: nvidia/cuda:12.2.0-base-ubuntu22.04
+      image: docker.io/nvidia/cuda:12.2.0-base-ubuntu22.04
       command:
         - nvidia-smi
       resources:
