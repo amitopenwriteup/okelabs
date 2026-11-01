@@ -30,6 +30,7 @@ The OCI Native Ingress Controller watches `Ingress` resources and manages an OCI
 - Cluster networking set up for load balancers: either OCI VCN-native pod networking (NPN) or Flannel, with security rules that allow the load balancer to reach the workers and pods
 - A **public subnet** for the load balancer in the cluster's VCN (or a private subnet for an internal load balancer)
 - The OCI CLI configured, if you install the add-on from the CLI
+- cert-manager installed in the cluster before the controller (see Lab 3)
 
 Check:
 
@@ -151,6 +152,15 @@ oci ce cluster list-addons --cluster-id "$CLUSTER_OCID" \
 
 `lifecycle-state` should be `ACTIVE`. You can also install the add-on from the Console: **Developer Services -> Kubernetes Clusters -> your cluster -> Add-ons**.
 
+> **Install cert-manager first.** The controller's webhook certificate comes from cert-manager. If cert-manager is missing when the controller is installed, the pod stays in `ContainerCreating` with `secret "oci-native-ingress-controller-tls" not found` (see "Fix: pod stuck on the missing TLS Secret" below). The controller's own guide installs cert-manager before the controller, so do the same here. I haven't confirmed that Oracle's add-on prerequisites page says this, so treat it as a safe default.
+
+```bash
+kubectl apply -f https://github.com/jetstack/cert-manager/releases/latest/download/cert-manager.yaml
+kubectl get pods -n cert-manager -w
+```
+
+Wait until the three cert-manager pods (`cert-manager`, `cert-manager-cainjector`, `cert-manager-webhook`) are `Running`, then install the add-on.
+
 Verify the controller pods:
 
 ```bash
@@ -159,6 +169,51 @@ kubectl get ingressclass
 ```
 
 The add-on's pods should be `Running`. If the namespace differs on your cluster, find it with `kubectl get pods -A | grep -i ingress`.
+
+### Fix: pod stuck on the missing TLS Secret
+
+**Symptom:** the controller pod stays in `ContainerCreating` for a long time, and `kubectl describe pod` shows:
+
+```text
+Warning  FailedMount  kubelet  MountVolume.SetUp failed for volume "cert" : secret "oci-native-ingress-controller-tls" not found
+```
+
+The `node.kubernetes.io/unreachable:NoExecute op=Exists for 300s` toleration shown near it is a default and is not the problem.
+
+**Cause:** the Secret `oci-native-ingress-controller-tls` holds the controller's webhook certificate, which cert-manager issues. If cert-manager is not installed, or was installed after the controller, nothing creates the Secret. The most likely reason is a missing or late cert-manager, but confirm it with the checks below.
+
+**1. Check cert-manager and the controller's Certificate:**
+
+```bash
+kubectl get pods -n cert-manager
+kubectl get crd | grep cert-manager
+kubectl get certificate,issuer,certificaterequest -n native-ingress-controller-system
+```
+
+**2. Fix by case:**
+
+| Check result | Case | Fix |
+| --- | --- | --- |
+| No `cert-manager` namespace or CRDs | cert-manager missing | Install it with the `kubectl apply` command above, then wait for its three pods to be `Running` |
+| cert-manager is running, but step 1 shows no Certificate or Issuer | cert-manager was installed after the controller, so the objects were never created | Remove the add-on and install it again (below) |
+| Certificate exists but is not `Ready` | Issuance is failing | `kubectl describe certificate -n native-ingress-controller-system`, then `kubectl describe certificaterequest -n native-ingress-controller-system` and read the events |
+
+To remove and reinstall the add-on, use the Console: **Kubernetes Clusters -> your cluster -> Add-ons -> NativeIngressController -> Remove**, wait for it to disappear from `oci ce cluster list-addons`, then run `oci ce cluster install-addon` again with your JSON file.
+
+**3. Check the result:**
+
+```bash
+kubectl get secret oci-native-ingress-controller-tls -n native-ingress-controller-system
+kubectl get pods -n native-ingress-controller-system -w
+```
+
+Once the Secret exists, the kubelet mounts it on its next retry and the pod starts. If it does not, delete the pod and the Deployment recreates it:
+
+```bash
+kubectl delete pod -n native-ingress-controller-system -l app.kubernetes.io/name=oci-native-ingress-controller
+```
+
+If the pod starts but fails afterwards, read its logs. The next likely cause is an IAM error (401, 403 or 404) from missing policies, covered in Lab 2.
 
 ### Alternative: install with Helm
 
@@ -523,6 +578,7 @@ Confirm in the Console that the load balancer is gone or deleting. Notes:
 | Symptom | Likely cause | Check |
 | --- | --- | --- |
 | Ingress `ADDRESS` stays empty | Load balancer still being created, or controller error | `kubectl describe ingress`, controller pod logs |
+| Controller pod stuck in `ContainerCreating`, `secret "oci-native-ingress-controller-tls" not found` | cert-manager missing, or installed after the controller | See "Fix: pod stuck on the missing TLS Secret" in Lab 3 |
 | Controller pods not running | Add-on not active, or auth failed | `oci ce cluster list-addons`, `kubectl get pods -n native-ingress-controller-system` |
 | Controller logs show 401/403/404 | Missing IAM policy or wrong principal | Re-check Lab 2 policies and `authType` |
 | Ingress is ignored | Wrong `ingressClassName`, or class not linked to the controller | `kubectl get ingressclass`, `spec.controller` must be `oci.oraclecloud.com/native-ingress-controller` |
