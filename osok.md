@@ -191,7 +191,7 @@ There should be no authentication or `401` errors.
 oci os bucket create \
   --compartment-id <COMPARTMENT_OCID>  \
   --namespace-name ax8ybbqiqian \
-  --name osok-demo-bucket \
+  --name osok-demo-bucket-test \
   --region ap-hyderabad-1
 
 oci os bucket list \
@@ -200,7 +200,7 @@ oci os bucket list \
   --region ap-hyderabad-1
 
 oci os bucket get \
-  --bucket-name osok-demo-bucket \
+  --bucket-name osok-demo-bucket-test \
   --namespace-name <OBJECT_STORAGE_NAMESPACE> \
   --region ap-hyderabad-1
 ```
