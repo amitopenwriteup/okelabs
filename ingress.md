@@ -4,6 +4,8 @@ Install the OCI Native Ingress Controller on an OKE cluster (`ap-hyderabad-1`) a
 
 The OCI Native Ingress Controller watches `Ingress` resources and manages an OCI Load Balancer for you: listeners, backend sets and routing rules. Unlike a `LoadBalancer` Service (one load balancer per service), one Ingress setup can serve many hosts and paths from a single load balancer.
 
+This guide authenticates the controller as an **OCI user** (an API key stored as a Kubernetes Secret), so it needs no IAM changes of its own.
+
 > **Cost note:** the controller creates a billable OCI load balancer. Delete the Ingress resources at the end of the demo (Lab 10).
 
 ## What you will do
@@ -11,7 +13,7 @@ The OCI Native Ingress Controller watches `Ingress` resources and manages an OCI
 | Lab | Step | Done when |
 | --- | --- | --- |
 | 1 | Check prerequisites, get the OCIDs | Cluster, versions, network, subnet, `CLUSTER_OCID` and `LB_SUBNET_OCID` ready |
-| 2 | Set up identity for the controller | Dynamic group and policies exist (2A), or API key prepared (2B) |
+| 2 | Prepare the API key and auth config | Unencrypted key and `user-auth-config.yaml` ready |
 | 3 | Install cert-manager, then the controller (add-on) | cert-manager pods `Running`, add-on `ACTIVE`, controller pod `1/1 Running` |
 | 4 | Deploy two sample applications | Pods up, Services of type `NodePort` |
 | 5 | Create IngressClassParameters and IngressClass | Both objects exist, subnet matches the add-on |
@@ -29,7 +31,7 @@ The OCI Native Ingress Controller watches `Ingress` resources and manages an OCI
 - A Kubernetes version supported by the controller (the controller's own docs list 1.27 through 1.36 at the time of writing, so check the current compatibility list)
 - Cluster networking set up for load balancers: either OCI VCN-native pod networking (NPN) or Flannel, with security rules that allow the load balancer to reach the workers and pods
 - A subnet for the load balancer in the cluster's VCN: **public** for an internet-facing load balancer, or **private** for an internal one
-- The OCI CLI configured (Cloud Shell has it ready)
+- The OCI CLI configured with an API key (`~/.oci/config`)
 - cert-manager, which you install in Lab 3 **before** the controller
 
 ### Step 1: Get the compartment OCID
@@ -39,7 +41,7 @@ export REGION=ap-hyderabad-1
 
 # Tenancy OCID: set automatically as $OCI_TENANCY in Cloud Shell.
 # Elsewhere, read it from your OCI CLI config:
-#   export OCI_TENANCY=$(grep -m1 '^tenancy' ~/.oci/config | cut -d= -f2 | tr -d ' ')
+export OCI_TENANCY=$(grep -m1 '^tenancy' ~/.oci/config | cut -d= -f2 | tr -d ' ')
 
 oci iam compartment list \
   --compartment-id "$OCI_TENANCY" \
@@ -115,56 +117,11 @@ Both lines must print an OCID. If `LB_SUBNET_OCID` is empty or still contains pl
 
 ---
 
-## Lab 2: Set up identity for the controller
+## Lab 2: Prepare the API key and auth config
 
-The controller calls OCI APIs, so it needs an identity principal. Pick **one** path:
+The controller calls OCI APIs, so it needs an identity. Here it acts as an **OCI user**, using that user's API key, which you store in a Kubernetes Secret in Lab 3. You can use the user your OCI CLI already runs as.
 
-| Principal | `authType` | Needs | Notes |
-| --- | --- | --- | --- |
-| Instance principal (default) | `instance` | Tenancy admin rights, to create a dynamic group and a policy | Uses a dynamic group that matches the worker nodes |
-| User principal | `user` | An existing OCI user whose group already has the needed permissions, and its API key | Uses an API key stored as a Kubernetes Secret. Use this when you cannot create dynamic groups or policies |
-| Workload identity | `workloadIdentity` | An Enhanced cluster, plus a policy | Not covered in this demo |
-
-**How to tell which path you can use:** run `oci iam dynamic-group list --compartment-id "$OCI_TENANCY" --all`. If it returns a `404 NotAuthorizedOrNotFound`, your CLI user has no IAM access in the tenancy, so either ask a tenancy admin to do 2A or use 2B.
-
-### 2A: Instance principal (dynamic group and policy)
-
-These need tenancy admin rights. Run them from the Console as an admin, or ask an admin to run them.
-
-**Dynamic group.** Name it `nic-dynamic-group`, with a rule matching the compartment your **worker nodes** are in:
-
-```text
-ALL {instance.compartment.id = '<COMPARTMENT_OCID>'}
-```
-
-**Policy.** Create it in the **root** compartment (the policy statements reference tenancy-level resources). When you use a compartment OCID, the statement must say `in compartment id <ocid>`, not `in compartment <ocid>`:
-
-```text
-Allow dynamic-group nic-dynamic-group to manage load-balancers in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to use virtual-network-family in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to manage cabundles in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to manage cabundle-associations in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to manage leaf-certificates in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to manage leaf-certificate-versions in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to read leaf-certificate-bundles in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to manage certificate-associations in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to read certificate-authorities in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to manage certificate-authority-associations in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to read certificate-authority-bundles in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to read public-ips in tenancy
-Allow dynamic-group nic-dynamic-group to manage floating-ips in tenancy
-Allow dynamic-group nic-dynamic-group to manage waf-family in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to read cluster-family in compartment id <COMPARTMENT_OCID>
-Allow dynamic-group nic-dynamic-group to use tag-namespaces in tenancy
-```
-
-If the dynamic group is in an identity domain other than Default, write the subject as `dynamic-group '<domain-name>'/'nic-dynamic-group'`. A wrong subject silently matches nothing and the controller fails with `404 NotAuthorizedOrNotFound` on `GetCluster`.
-
-The authoritative statement list for the add-on is on Oracle's prerequisites page, so confirm it there: <https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengsettingupnativeingresscontroller-addon-prereqs.htm>. Policies can take a minute or two to apply.
-
-### 2B: User principal (API key in a Secret)
-
-Use this when you cannot create a dynamic group or policy. The controller then acts as an OCI user, so that user's group must already allow it to manage load balancers, certificates and networking in the compartment. If it lacks a permission, the controller logs a `401`, `403` or `404` with the operation name (see Troubleshooting). The tenancy-level statements in 2A (`public-ips`, `floating-ips`, `tag-namespaces`) are the ones most likely to be missing for such a user.
+That user's group must already be allowed to manage load balancers, certificates and networking in the compartment. If a permission is missing, the controller logs a `401`, `403` or `404` with the operation name (see Troubleshooting), and the fix is to have a tenancy admin grant it to the user's group (see "Permissions the user needs" at the end of this lab).
 
 > This puts an API private key into the cluster. That is fine for a short demo. Use a dedicated user for anything longer, and delete the Secret and key copies at the end (Lab 10).
 
@@ -218,6 +175,31 @@ cat user-auth-config.yaml
 
 Every field must have a value. `passphrase` stays empty because the key is unencrypted now. You create the Secret from this file in Lab 3.
 
+### Permissions the user needs
+
+Check this only if the controller later logs a `401`, `403` or `404`. A tenancy admin can grant these to the group the user belongs to (replace `<GROUP_NAME>` and `<COMPARTMENT_OCID>`). When you use an OCID, the statement must say `in compartment id <ocid>`:
+
+```text
+Allow group <GROUP_NAME> to manage load-balancers in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to use virtual-network-family in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to manage cabundles in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to manage cabundle-associations in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to manage leaf-certificates in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to manage leaf-certificate-versions in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to read leaf-certificate-bundles in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to manage certificate-associations in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to read certificate-authorities in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to manage certificate-authority-associations in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to read certificate-authority-bundles in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to read public-ips in tenancy
+Allow group <GROUP_NAME> to manage floating-ips in tenancy
+Allow group <GROUP_NAME> to manage waf-family in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to read cluster-family in compartment id <COMPARTMENT_OCID>
+Allow group <GROUP_NAME> to use tag-namespaces in tenancy
+```
+
+These are the controller's sample statements with the subject changed to a group. Confirm the current list on Oracle's prerequisites page: <https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengsettingupnativeingresscontroller-addon-prereqs.htm>. Policies can take a minute or two to apply. The three tenancy-level statements (`public-ips`, `floating-ips`, `tag-namespaces`) are the ones most likely to be missing.
+
 ---
 
 ## Lab 3: Install cert-manager, then the controller
@@ -242,23 +224,7 @@ Do not continue until this succeeds.
 
 ### Step 2: Install the controller as an OKE add-on
 
-Create the add-on file from your variables. Check that no `value` is empty before you install.
-
-**Instance principal (2A):**
-
-```bash
-cat > native-ingress-controller-addon.json <<EOF
-{
-  "addonName": "NativeIngressController",
-  "configurations": [
-    {"key": "compartmentId", "value": "$COMPARTMENT_OCID"},
-    {"key": "loadBalancerSubnetId", "value": "$LB_SUBNET_OCID"}
-  ]
-}
-EOF
-```
-
-**User principal (2B)**, which adds `authType` and `authSecretName`:
+Create the add-on file from your variables. `authType` and `authSecretName` tell the controller to use the Secret you create in Step 3. Check that no `value` is empty before you install.
 
 ```bash
 cat > native-ingress-controller-addon.json <<EOF
@@ -272,15 +238,15 @@ cat > native-ingress-controller-addon.json <<EOF
   ]
 }
 EOF
+
+cat native-ingress-controller-addon.json
 ```
 
-The key is `loadBalancerSubnetId` (not `subnetId`). Valid `authType` values are `instance` (default), `workloadIdentity` and `user`. Other arguments, such as `logVerbosity`, are listed here: <https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/configuration-arguments-nic.htm>.
+The key is `loadBalancerSubnetId` (not `subnetId`). Other arguments, such as `logVerbosity`, are listed here: <https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/configuration-arguments-nic.htm>.
 
 Install:
 
 ```bash
-cat native-ingress-controller-addon.json
-
 oci ce cluster install-addon \
   --addon-name NativeIngressController \
   --cluster-id "$CLUSTER_OCID" \
@@ -296,7 +262,7 @@ oci ce cluster list-addons --cluster-id "$CLUSTER_OCID" \
 
 `lifecycle-state` should be `ACTIVE`. You can also install the add-on from the Console: **Developer Services -> Kubernetes Clusters -> your cluster -> Add-ons**.
 
-To change the configuration of an add-on that is already installed (for example to switch to user principal), use `update-addon`. It **replaces** the whole configuration, so include every key:
+To change the configuration of an add-on that is already installed, use `update-addon`. It **replaces** the whole configuration, so include every key:
 
 ```bash
 oci ce cluster update-addon \
@@ -307,7 +273,7 @@ oci ce cluster update-addon \
 
 where `addon-config.json` is a JSON array of the `{"key": ..., "value": ...}` entries shown above.
 
-### Step 3 (user principal only): Create the auth Secret
+### Step 3: Create the auth Secret
 
 The Secret must be in the add-on's namespace, which exists once the add-on is installed:
 
@@ -341,7 +307,7 @@ kubectl logs -n native-ingress-controller-system -l app.kubernetes.io/name=oci-n
 ```
 
 - `failed to acquire lease` / `lock is held by ...` lines are **normal** while a restarted pod waits for the previous instance's lease to expire (about a minute). A pod that has not yet become the leader only logs these lines. If the lease holder ID keeps changing, a controller is crashing: check `kubectl logs ... --previous` and see Troubleshooting.
-- `successfully acquired lease`, then `Controller loop...` and `Fetching auth config provider for type: ...` means authentication is being set up. A `401`, `403` or `404` after that points to a permission problem.
+- `successfully acquired lease`, then `Controller loop...` and `Fetching auth config provider for type: user` means authentication is being set up. A `401`, `403` or `404` after that points to a permission problem.
 
 ### Fix: pod stuck on the missing TLS Secret
 
@@ -383,7 +349,7 @@ oci ce cluster disable-addon \
 oci ce cluster list-addons --cluster-id "$CLUSTER_OCID"
 ```
 
-When `NativeIngressController` no longer appears in the list, run the `install-addon` command from Step 2 again. You can also do this in the Console: **Kubernetes Clusters -> your cluster -> Add-ons -> NativeIngressController -> Remove**.
+When `NativeIngressController` no longer appears in the list, run the `install-addon` command from Step 2 again, then recreate the `oci-config` Secret (Step 3) if it was removed with the namespace. You can also do the removal in the Console: **Kubernetes Clusters -> your cluster -> Add-ons -> NativeIngressController -> Remove**.
 
 **3. Check the result:**
 
@@ -398,7 +364,7 @@ Once the Secret exists, the kubelet mounts it on its next retry and the pod star
 kubectl delete pod -n native-ingress-controller-system -l app.kubernetes.io/name=oci-native-ingress-controller
 ```
 
-If the pod starts but fails afterwards, read its logs (`--previous` for the last crashed run). The next likely causes are an IAM error (401, 403 or 404, Lab 2) or an unusable private key (Lab 2B).
+If the pod starts but fails afterwards, read its logs (`--previous` for the last crashed run). The next likely causes are an unusable private key (Lab 2) or a `401`, `403` or `404` from a missing permission.
 
 ---
 
@@ -807,7 +773,7 @@ oci ce cluster list-addons --cluster-id "$CLUSTER_OCID"
 kubectl delete -f https://github.com/jetstack/cert-manager/releases/latest/download/cert-manager.yaml
 ```
 
-If you used the user principal (2B), also remove the credentials. The decrypted key is an unprotected copy of your API key:
+Remove the credentials. The decrypted key is an unprotected copy of your API key:
 
 ```bash
 kubectl delete secret oci-config -n native-ingress-controller-system
@@ -817,11 +783,11 @@ rm -f "$HOME/nic_api_key.pem" user-auth-config.yaml native-ingress-controller-ad
 Notes:
 
 - `--is-remove-existing-add-on true` removes the add-on and its resources from the cluster. With `false`, the add-on is only disabled and its existing resources stay in place. Add `--force` to skip the confirmation prompt.
+- If the add-on is already removed, the `oci-config` Secret may be gone with its namespace, and the `kubectl delete secret` command then reports "not found", which is fine.
 - You can also remove the add-on from the Console (**Cluster -> Add-ons**).
 - To keep the load balancer after deleting the IngressClass, set `oci-native-ingress.oraclecloud.com/delete-protection-enabled: "true"` on the IngressClass first.
 - Certificates created from Kubernetes Secrets are **not** removed when an Ingress is deleted. Delete them in the OCI Certificates service.
 - Delete the demo certificate files (`tls.key`, `tls.crt`, `ca.crt`).
-- If you created a dynamic group and policy (2A) only for this demo, remove them too.
 
 ---
 
@@ -831,13 +797,11 @@ Notes:
 | --- | --- | --- |
 | `CLUSTER_OCID` is empty or `null` | Wrong cluster name or compartment, or cluster not `ACTIVE` | Re-run the `oci ce cluster list` command in Lab 1, Step 2 |
 | `update-addon` fails with `configurations[1].value size must be between 1 and 8191` | A configuration value is empty, usually `LB_SUBNET_OCID` | `cat` the JSON file and `echo` the variables. Set a real OCID (not placeholder text) and regenerate the file |
-| `oci iam dynamic-group create` or `policy create` returns `404 NotAuthorizedOrNotFound` | The CLI user has no IAM rights in the tenancy | Create them in the Console as a tenancy admin, or use Lab 2B |
 | Ingress `ADDRESS` stays empty | Controller not running or not the leader, or an error while creating the load balancer | `kubectl get pods -n native-ingress-controller-system`, then controller logs (including `--previous`) |
 | Controller pod `ContainerCreating`, `secret "oci-native-ingress-controller-tls" not found` | cert-manager missing, or installed after the controller | See "Fix: pod stuck on the missing TLS Secret" in Lab 3 |
-| Controller pod `CrashLoopBackOff`, log shows `NotAuthorizedOrNotFound` on `GetCluster` | Dynamic group does not match the worker nodes, policy missing or in the wrong place, or wrong subject syntax | Re-check Lab 2A: dynamic group compartment, `in compartment id <ocid>`, domain-qualified subject |
-| Controller crashes with `failed to create client, can not create client, bad configuration: failed to parse private key` | The Secret holds an encrypted or wrong private key | `head -1` the key. It must not say `ENCRYPTED`. Decrypt it (Lab 2B), recreate the `oci-config` Secret, and restart the deployment |
+| Controller crashes with `failed to create client, can not create client, bad configuration: failed to parse private key` | The Secret holds an encrypted or wrong private key | `head -1` the key. It must not say `ENCRYPTED`. Decrypt it (Lab 2), recreate the `oci-config` Secret, and restart the deployment |
 | Secret errors such as `Empty Configuration` or `error retrieving secret` | `oci-config` missing, in the wrong namespace, or missing `config` / `private-key` keys | `kubectl get secret oci-config -n native-ingress-controller-system -o yaml` shows both keys |
-| Logs show `401`/`403`/`404` with an operation name | The principal lacks that permission | Add the matching statement (Lab 2A), or ask for it to be added to the user's group (Lab 2B) |
+| Logs show `401`, `403` or `404` / `NotAuthorizedOrNotFound` with an operation name | The OCI user is missing that permission, or the user, tenancy or fingerprint in `user-auth-config.yaml` is wrong | Check the values in the Secret's `config`, and ask a tenancy admin to grant the permission to the user's group (Lab 2, "Permissions the user needs") |
 | Logs repeat `failed to acquire lease` / `lock is held by ...` | A restarted pod waiting for the old leader's lease, or a crash loop | Wait about a minute. If the holder ID keeps changing, read `--previous` logs. If one stale holder never expires, `kubectl delete lease oci-native-ingress-controller -n native-ingress-controller-system` |
 | Ingress is ignored | Wrong `ingressClassName`, or class not linked to the controller | `kubectl get ingressclass`, `spec.controller` must be `oci.oraclecloud.com/native-ingress-controller` |
 | Parameters not found | IngressClass `parameters` point to the wrong namespace or name | Match `namespace` and `name` to the IngressClassParameters |
