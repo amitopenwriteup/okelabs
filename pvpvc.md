@@ -9,7 +9,7 @@
 
 ```bash
 export REGION=ap-hyderabad-1
-export CLUSTER_OCID='ocid1.cluster.oc1.ap-hyderabad-1.aaaaaaaa2e3vt7rsr45wjuuqk5nvplxfrfiabgt6mirm3gc7bcmqdvg6r7ha'
+export CLUSTER_OCID='add your own ocid'
 
 kubectl get pv
 kubectl get sc
