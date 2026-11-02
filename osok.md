@@ -181,6 +181,27 @@ kubectl -n "$NS" logs deploy/$DEP --tail=50
 
 There should be no authentication or `401` errors.
 
+## Lab 6: Verify the bucket in OCI
+
+```bash
+
+oci os bucket create \
+  --compartment-id <COMPARTMENT_OCID>  \
+  --namespace-name ax8ybbqiqian \
+  --name osok-demo-bucket \
+  --region ap-hyderabad-1
+
+oci os bucket list \
+  --compartment-id <COMPARTMENT_OCID> \
+  --namespace-name <OBJECT_STORAGE_NAMESPACE> \
+  --region ap-hyderabad-1
+
+oci os bucket get \
+  --bucket-name osok-demo-bucket \
+  --namespace-name <OBJECT_STORAGE_NAMESPACE> \
+  --region ap-hyderabad-1
+```
+
 ---
 
 ## Lab 6: Create a Bucket from Kubernetes
@@ -223,21 +244,7 @@ An unknown-field error on apply names the field to correct.
 
 ---
 
-## Lab 7: Verify the bucket in OCI
 
-```bash
-kubectl get bucket osok-demo-bucket -n default -o yaml
-
-oci os bucket list \
-  --compartment-id <COMPARTMENT_OCID> \
-  --namespace-name <OBJECT_STORAGE_NAMESPACE> \
-  --region ap-hyderabad-1
-
-oci os bucket get \
-  --bucket-name osok-demo-bucket \
-  --namespace-name <OBJECT_STORAGE_NAMESPACE> \
-  --region ap-hyderabad-1
-```
 
 Console: **Storage -> Buckets**, choose the demo compartment.
 
