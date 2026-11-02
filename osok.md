@@ -38,10 +38,9 @@ export OPERATOR_SDK_VERSION=v1.41.1
 export OPERATOR_SDK_DL_URL=https://github.com/operator-framework/operator-sdk/releases/download/${OPERATOR_SDK_VERSION}
 
 curl -fLO ${OPERATOR_SDK_DL_URL}/operator-sdk_${OS}_${ARCH}
-curl -fLO ${OPERATOR_SDK_DL_URL}/checksums.txt
-grep operator-sdk_${OS}_${ARCH} checksums.txt | sha256sum -c -
+ -
 chmod +x operator-sdk_${OS}_${ARCH}
-mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk
+mv operator-sdk_${OS}_${ARCH} /bin/operator-sdk
 hash -r
 operator-sdk version
 ```
