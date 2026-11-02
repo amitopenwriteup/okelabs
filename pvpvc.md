@@ -326,7 +326,7 @@ parameters:
   mountTargetSubnetOcid: <SUBNET_OCID>
   compartmentOcid: <COMPARTMENT_OCID>
   exportPath: /FileSystem1
-  exportOptions: '[{"source":"10.0.0.0/16","requirePrivilegedSourcePort":false,"access":"READ_WRITE","identitySquash":"NONE"}]'
+  exportOptions: '[{"source":"172.16.1.0/24","requirePrivilegedSourcePort":false,"access":"READ_WRITE","identitySquash":"NONE"}]'
 ```
 
 Set `source` to your worker node subnet CIDR. To reuse a mount target, replace `mountTargetSubnetOcid` with `mountTargetOcid`.
