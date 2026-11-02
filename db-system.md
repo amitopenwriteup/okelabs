@@ -108,8 +108,8 @@ Required keys: `tenancy`, `user`, `fingerprint`, `region`, `passphrase` (mandato
 
 ```bash
 # Save the key with exactly one BEGIN and one END line
-nano /root/oci_api_key.pem
-chmod 600 /root/oci_api_key.pem
+nano /root/.oci/oci_api_key.pem
+chmod 600 /root/.oci/oci_api_key.pem
 
 export NS=oci-service-operator-mysql-system
 
@@ -119,7 +119,7 @@ kubectl -n "$NS" create secret generic ocicredentials \
   --from-literal=fingerprint='<API_KEY_FINGERPRINT>' \
   --from-literal=region='ap-hyderabad-1' \
   --from-literal=passphrase='<KEY_PASSPHRASE>' \
-  --from-file=privatekey=/root/oci_api_key.pem
+  --from-file=privatekey=/root/.oci/oci_api_key.pem
 
 kubectl -n "$NS" describe secret ocicredentials
 ```
