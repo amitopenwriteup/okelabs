@@ -62,7 +62,10 @@ Expected: `catalog-operator`, `olm-operator`, `operatorhubio-catalog` and two `p
 ## Lab 3: Install the OSOK Object Storage bundle
 
 ```bash
-operator-sdk run bundle ghcr.io/oracle/oci-service-operator-objectstorage-bundle:v2.1.0-alpha --timeout 5m
+
+export NS=oci-service-operator-objectstorage-system
+kubectl create ns $NS
+operator-sdk run bundle ghcr.io/oracle/oci-service-operator-objectstorage-bundle:v2.1.0-alpha --timeout 5m -n $NS
 ```
 
 This pulls the bundle image, builds a catalog, and creates a CatalogSource, OperatorGroup and Subscription so OLM installs the operator. The package creates the namespace `oci-service-operator-objectstorage-system`.
