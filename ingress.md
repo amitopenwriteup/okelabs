@@ -54,7 +54,7 @@ Collect two OCIDs you need later:
 # Compartment OCID: Console -> Identity -> Compartments
 
 # Load balancer subnet OCID (public subnet in the cluster's VCN)
-oci network subnet list --compartment-id <COMPARTMENT_OCID> --region $REGION \
+oci network subnet list --compartment-id $COMPARTMENT_OCID --region $REGION \
   --query 'data[].{name:"display-name",id:id,private:"prohibit-public-ip-on-vnic"}' --output table
 ```
 
