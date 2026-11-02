@@ -128,10 +128,11 @@ The operator reads a Secret named `ocicredentials` from its own namespace. Requi
 
 ```bash
 # Save the key with exactly one BEGIN and one END line
-nano /root/oci_api_key.pem
-chmod 600 /root/oci_api_key.pem
+nano /root/.oci/oci_api_key.pem
+chmod 600 /root/.oci/oci_api_key.pem
 
 export NS=oci-service-operator-objectstorage-system
+kubectl create ns $NS
 
 kubectl -n "$NS" create secret generic ocicredentials \
   --from-literal=tenancy='<TENANCY_OCID>' \
