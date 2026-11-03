@@ -604,9 +604,120 @@ Label the namespace before the pods are created, or restart the deployments afte
 
 ---
 
+## Lab 7: Test the routes
 
+```bash
+LB_IP=$(kubectl get ingress demo-ingress -n ingress-demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "$LB_IP"
 
-## Lab : Verify in OCI
+curl -s -H "Host: foo.bar.com" http://$LB_IP/testecho1
+curl -s -H "Host: foo.bar.com" http://$LB_IP/testecho2
+curl -s -o /dev/null -w "%{http_code}\n" -H "Host: foo.bar.com" http://$LB_IP/nothere
+```
+
+- If `LB_IP` is empty, the Ingress has no address yet. Go back to Lab 6 and Troubleshooting.
+- The first two should return the echoserver output from `testecho1` and `testecho2`.
+- The third path has no rule, so you should get a 404 or another non-200 response.
+- The `Host` header is what matches the rule. Alternatively, add a `hosts` entry for `foo.bar.com`.
+- With an **internal** (private) load balancer, run the `curl` commands from a machine inside the VCN, such as the jumpbox, and make sure the subnet security rules allow port 80.
+
+Show load balancing across pods by repeating a request and watching the `hostname` or pod name in the output change.
+
+**If you get `502 Bad Gateway`:** the load balancer is up but has no healthy backends. Check, in order:
+
+```bash
+kubectl get svc -n ingress-demo     # must be NodePort on Flannel
+
+LB_OCID=$(kubectl get ingressclass oci-native-ingress-class \
+  -o jsonpath='{.metadata.annotations.oci-native-ingress\.oraclecloud\.com/id}')
+
+oci lb backend-set list --load-balancer-id "$LB_OCID" \
+  --query 'data[].{name:name,backends:backends[].{ip:"ip-address",port:port}}'
+
+oci lb load-balancer-health get --load-balancer-id "$LB_OCID" \
+  --query 'data.{status:status,critical:"critical-state-backend-set-names"}'
+```
+
+- **Empty `backends` in the `bs_...` sets, health `UNKNOWN`:** the Services are `ClusterIP`. Patch them to `NodePort` (Lab 4), wait a minute, and check again. If they are already `NodePort`, force a resync with `kubectl annotate ingress demo-ingress -n ingress-demo resync="$(date +%s)" --overwrite` and read the controller log. `default_ingress` is the default backend set and stays empty when the Ingress has no default backend, which is normal.
+- **Backends listed but health `CRITICAL`:** the network rules are blocking the load balancer. The worker node subnet's security list or NSG must allow the load balancer subnet's CIDR on TCP 30000-32767 (the NodePort range), and the load balancer subnet must allow egress to the workers on the same range.
+
+---
+
+## Lab 8 (optional): Add TLS
+
+Terminate HTTPS at the load balancer using a Kubernetes TLS Secret. The controller creates the OCI certificate and CA bundle from it.
+
+Create a self-signed certificate for the demo:
+
+```bash
+openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+  -keyout tls.key -out tls.crt \
+  -subj "/CN=foo.bar.com" -addext "subjectAltName=DNS:foo.bar.com"
+cp tls.crt ca.crt
+
+kubectl create secret generic demo-tls-secret \
+  --type=kubernetes.io/tls \
+  -n ingress-demo \
+  --from-file=tls.crt --from-file=tls.key --from-file=ca.crt
+```
+
+The Secret needs `ca.crt`, `tls.crt` and `tls.key`. If `ca.crt` is empty, `tls.crt` must hold the full chain with the server certificate first.
+
+Create `demo-ingress-tls.yaml`:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo-ingress-tls
+  namespace: ingress-demo
+  annotations:
+    oci-native-ingress.oraclecloud.com/backend-tls-enabled: "false"
+spec:
+  ingressClassName: oci-native-ingress-class
+  tls:
+    - hosts:
+        - foo.bar.com
+      secretName: demo-tls-secret
+  rules:
+    - host: "foo.bar.com"
+      http:
+        paths:
+          - pathType: Exact
+            path: "/testecho1"
+            backend:
+              service:
+                name: testecho1
+                port:
+                  number: 80
+```
+
+The `backend-tls-enabled: "false"` annotation tells the load balancer to talk plain HTTP to the backends, since the echo servers do not serve TLS.
+
+```bash
+kubectl apply -f demo-ingress-tls.yaml
+kubectl get ingress -n ingress-demo
+curl -sk --resolve foo.bar.com:443:$LB_IP https://foo.bar.com/testecho1
+```
+
+`-k` accepts the self-signed certificate. As an alternative to the Secret, you can point an Ingress at an existing OCI certificate with the annotation `oci-native-ingress.oraclecloud.com/certificate-ocid: <CERTIFICATE_OCID>`.
+
+Useful Ingress annotations:
+
+| Annotation | Purpose |
+| --- | --- |
+| `oci-native-ingress.oraclecloud.com/protocol` | Listener protocol: `HTTP2`, `GRPC` or `TCP` |
+| `oci-native-ingress.oraclecloud.com/certificate-ocid` | Use an OCI certificate for TLS termination |
+| `oci-native-ingress.oraclecloud.com/backend-tls-enabled` | `"false"` for plain-HTTP backends |
+| `oci-native-ingress.oraclecloud.com/http-listener-port`, `https-listener-port` | Listener ports |
+| `oci-native-ingress.oraclecloud.com/healthcheck-path` | Backend health check path |
+| `oci-native-ingress.oraclecloud.com/id` | Import an existing load balancer |
+
+IngressClass annotations include `oci-native-ingress.oraclecloud.com/waf-policy-ocid` (attach a WAF policy), `network-security-group-ids`, `reserved-private-ip-address-id` (needs `isPrivate: true`), tag annotations, and `delete-protection-enabled`.
+
+---
+
+## Lab 9: Verify in OCI
 
 Check the load balancer the controller created, and its health:
 
