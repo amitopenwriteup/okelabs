@@ -1,521 +1,255 @@
-# Lab: OKE Image Security: Scanning, Signing and Enforcing Signed Images
+# OKE Lab: Image Security
 
-**Duration:** ~75–90 minutes
-**Platform:** Oracle Container Engine for Kubernetes (OKE) and Oracle Cloud Infrastructure Registry (OCIR), existing cluster
+**Topics**
+1. Demo: Scan a container image for vulnerabilities
+2. Demo: Sign and verify a container image
+3. Concept: Enforcing the use of signed images from OCIR
+4. Demo: Enforcing the use of signed images from OCIR
+
+**Estimated time:** 60-90 minutes
+**Level:** Intermediate
 
 ---
-
-## Lab Objectives
-
-1. Scan a container image in OCIR for vulnerabilities with the OCI **Vulnerability Scanning Service**.
-2. **Sign** a container image with a key in OCI Vault and **verify** the signature.
-3. Understand how OKE **enforces the use of signed images** from OCIR.
-4. Enable image verification on a cluster and prove that signed images run while unsigned images are blocked.
-
-## Concepts
-
-| Capability | Service | What it protects against |
-|---|---|---|
-| **Vulnerability scanning** | OCI Vulnerability Scanning Service (VSS) | Known CVEs in OS packages and libraries inside images |
-| **Image signing** | OCI Vault (asymmetric key) + OCIR | Tampered or unapproved images (provenance and integrity) |
-| **Signature enforcement** | OKE image verification policy | Running images that were never signed by your trusted key |
-
-```
-Build → Push to OCIR → Scan (CVEs) → Sign with Vault key → Deploy to OKE
-                                                              │
-                          OKE verifies signature against the trusted key
-                          before the pod is admitted
-```
-
-**Important points:**
-
-- Scanning tells you what is *vulnerable*; signing tells you what is *approved*. Use both.
-- A signature is bound to the image **digest** (the immutable `sha256:...`), not to a mutable tag.
-- Image verification policies on OKE apply to **Enhanced** clusters. Check your cluster type first.
 
 ## Prerequisites
 
-- An existing OKE **Enhanced** cluster and working `kubectl` access as an administrator.
-- OCI CLI configured, plus Docker (or Podman) on your workstation.
-- Your **tenancy namespace** (Console → Tenancy details, or `oci os ns get`).
-- An **auth token** for your user (Console → My profile → Auth tokens → Generate token) for OCIR login.
-- Permission to create OCIR repositories, Vault keys, scan recipes and targets.
-
-Set variables:
-
-```bash
-export REGION_KEY="bom"                       # OCIR region key, e.g. bom (Mumbai), iad (Ashburn), fra (Frankfurt)
-export TENANCY_NS="$(oci os ns get --query 'data' --raw-output)"
-export OCI_USER="<your-oci-username>"         # for federated users: oracleidentitycloudservice/<username>
-export COMPARTMENT_OCID="ocid1.compartment.oc1..xxxx"
-export CLUSTER_OCID="ocid1.cluster.oc1.<region>.xxxx"
-export REPO="secure-demo/web"                 # repository path inside OCIR
-export REGISTRY="${REGION_KEY}.ocir.io/${TENANCY_NS}"
-
-kubectl get nodes
-oci ce cluster get --cluster-id $CLUSTER_OCID --query 'data.type'    # expect "ENHANCED_CLUSTER"
-```
+- An OCI tenancy and a user with permissions to manage OCIR, Vault, Vulnerability Scanning and OKE
+- An **Enhanced** OKE cluster (image verification is not available on Basic clusters)
+- `kubectl` configured to access the cluster
+- The OCIR repository from the previous lab (for example `oke-demo/webapp`) that **already contains the images you pushed earlier**. No new push is needed; this lab reuses them:
+  - `v1` - the image you will scan and sign
+  - `v2` - an image you will leave **unsigned** for the enforcement test
+- Note your repository name and compartment; replace `oke-demo/webapp` in this lab with your own repository name
+- An **Auth Token** for your user (Profile > My profile > Auth tokens)
 
 ---
 
-## Part 0: Prepare a Demo Image in OCIR
+# Part 1 - Demo: Scan a Container Image for Vulnerabilities
 
-### Step 0.1: Log In to OCIR
+OCI **Vulnerability Scanning Service (VSS)** scans images stored in OCIR and reports known CVEs.
 
-```bash
-docker login ${REGION_KEY}.ocir.io -u "${TENANCY_NS}/${OCI_USER}"
-# Password: paste your auth token
+## 1.1 Verify the repository contents
+
+1. Open **Developer Services > Container Registry**.
+2. Select your compartment and open the repository `oke-demo/webapp`.
+3. Confirm both `v1` and `v2` are listed.
+
+## 1.2 Create the IAM policy for the scanning service
+
+Go to **Identity & Security > Policies > Create Policy** and add:
+
+```text
+allow service vulnerability-scanning-service to read repos in tenancy
+allow service vulnerability-scanning-service to read compartments in tenancy
 ```
 
-### Step 0.2: Build and Push Two Images
+## 1.3 Create a Container Scan Recipe
 
-An older base image is useful because it will typically show vulnerabilities in the scan.
+1. Go to **Identity & Security > Scanning > Container image scan recipes**.
+2. Click **Create container scan recipe**.
+3. Enter:
+   - Name: `oke-demo-recipe`
+   - Compartment: your compartment
+   - Scan level: `Standard`
+   - Images to scan: `2` (scans both `v1` and `v2`; with `1` only the most recent image is scanned)
+4. Click **Create**.
 
-```bash
-mkdir -p ~/image-demo && cd ~/image-demo
-cat <<'EOF' > Dockerfile
-FROM nginx:1.21
-RUN echo "image security lab" > /usr/share/nginx/html/index.html
-EOF
+## 1.4 Create a Container Scan Target
 
-docker build -t ${REGISTRY}/${REPO}:v1 .
-docker push ${REGISTRY}/${REPO}:v1
-```
+1. Go to **Scanning > Container image scan targets** and click **Create target**.
+2. Enter:
+   - Name: `oke-demo-target`
+   - Recipe: `oke-demo-recipe`
+   - Registry compartment: the compartment holding the repository
+   - Repository: the same repository where you pushed the images in the previous lab (for example `oke-demo/webapp`)
+3. Click **Create**.
 
-Create a second image that you will intentionally **leave unsigned**:
+> You do not need to push the images again. The target scans what is already in the repository. If no report appears after a few minutes, push a new tag or edit and save the target to trigger a scan.
 
-```bash
-docker tag ${REGISTRY}/${REPO}:v1 ${REGISTRY}/${REPO}:unsigned
-docker push ${REGISTRY}/${REPO}:unsigned
-```
+## 1.5 View the results
 
-> If the repository doesn't exist yet, OCIR creates it on first push (as private by default in the tenancy root compartment). To use a specific compartment, create the repository first in the Console.
+1. Wait a few minutes for the scan to complete.
+2. Go to **Scanning > Container image scan reports**.
+3. Open the report for your repository (for example `oke-demo/webapp`) and review the results for both `v1` and `v2`.
+4. Review the severity summary (Critical / High / Medium / Low), CVE IDs, affected packages and fixed versions.
 
-### Step 0.3: Collect Image Details
+## 1.6 Remediate
 
-```bash
-oci artifacts container image list --compartment-id $COMPARTMENT_OCID \
-  --repository-name $REPO \
-  --query 'data.items[].{id:id,digest:digest,version:version}' --output table
-```
+- Rebuild the image from a patched base image, push it as a new version, and re-scan.
+- Confirm the high and critical counts drop.
 
-Record the **image OCID** and **digest** of the `v1` image:
-
-```bash
-export IMAGE_OCID="ocid1.containerimage.oc1.<region>.xxxx"
-export IMAGE_DIGEST="sha256:xxxxxxxx"
-```
-
-> Both tags currently point to the same digest, since the same image was pushed twice. To make the unsigned test valid, rebuild the second image with a small change, as shown below, so that it has a different digest.
-
-```bash
-cat <<'EOF' > Dockerfile.unsigned
-FROM nginx:1.21
-RUN echo "this image is NOT signed" > /usr/share/nginx/html/index.html
-EOF
-docker build -f Dockerfile.unsigned -t ${REGISTRY}/${REPO}:unsigned .
-docker push ${REGISTRY}/${REPO}:unsigned
-```
-
-Re-run the `image list` command, and record the **unsigned** image's digest:
-
-```bash
-export UNSIGNED_DIGEST="sha256:yyyyyyyy"
-```
+**Checkpoint:** You can see a vulnerability report for your OCIR image.
 
 ---
 
-## Part 1: Scan a Container Image for Vulnerabilities
+# Part 2 - Demo: Sign and Verify a Container Image
 
-### Step 1.1: Create IAM Policies for the Scanning Service
+Image signing proves **who** published an image and that it has **not been modified**. The signing key is stored in **OCI Vault**.
 
-The scanning service needs permission to read your repositories and compartments:
+## 2.1 Create a Vault and a signing key
 
-```
-Allow service vulnerability-scanning-service to read repos in tenancy
-Allow service vulnerability-scanning-service to read compartments in tenancy
-```
+1. Go to **Identity & Security > Vault** and click **Create Vault** (name: `oke-signing-vault`).
+2. Open the vault and click **Create Key**:
+   - Name: `image-signing-key`
+   - Protection mode: HSM (or Software)
+   - Key shape - Algorithm: **RSA**, Length: **2048 bits**
+3. Wait for the key to become **Enabled**.
 
-Your user (or its group) also needs access to manage scan resources, for example:
+## 2.2 Sign the image
 
-```
-Allow group <iam-group> to manage vss-family in compartment <compartment-name>
-Allow group <iam-group> to read repos in compartment <compartment-name>
-```
+1. Go to **Developer Services > Container Registry** and open `oke-demo/webapp`.
+2. Click the image **v1**.
+3. Open the **Image signatures** tab and click **Create image signature**.
+4. Select:
+   - Vault compartment and **Vault**: `oke-signing-vault`
+   - **Key**: `image-signing-key` and its key version
+   - Signing algorithm: `SHA_256_RSA_PKCS_PSS`
+   - Description: `oke-demo v1 signature`
+5. Click **Create**.
 
-### Step 1.2: Create a Container Scan Recipe
+## 2.3 Verify the signature
 
-**Console:** Identity & Security → **Scanning** → **Container Scan Recipes** → **Create container scan recipe**. Choose a name (for example `oke-demo-recipe`) and a scan level.
+1. Stay on the `v1` image page and open **Image signatures**.
+2. Confirm a signature is listed with the key, key version and algorithm.
+3. Open `v2` and confirm it shows **no signatures**.
 
-**CLI (alternative):**
-
-```bash
-oci vulnerability-scanning container-scan-recipe create \
-  --compartment-id $COMPARTMENT_OCID \
-  --display-name oke-demo-recipe \
-  --scan-settings '{"scanLevel":"STANDARD"}'
-```
-
-### Step 1.3: Create a Container Scan Target
-
-The target ties the recipe to the repository to be scanned.
-
-**Console:** Scanning → **Targets** → **Create target** → choose **Container** type, select the recipe, the compartment and the repository (`secure-demo/web`).
-
-**CLI (alternative):**
-
-```bash
-export RECIPE_OCID="ocid1.containerscanrecipe.oc1..xxxx"
-
-oci vulnerability-scanning container-scan-target create \
-  --compartment-id $COMPARTMENT_OCID \
-  --display-name oke-demo-target \
-  --container-scan-recipe-id $RECIPE_OCID \
-  --target-registry '{"compartmentId":"'$COMPARTMENT_OCID'","type":"OCIR","repositories":["'$REPO'"]}'
-```
-
-### Step 1.4: Wait for the Scan and View Results
-
-Scans start after the target is created and when new images are pushed to the repository. This can take several minutes.
-
-**Console:** Scanning → **Reports** → **Container image scans**. Open the scan for your image to see the severity summary and CVE list.
-
-**CLI:**
-
-```bash
-oci vulnerability-scanning container-scan-result list --compartment-id $COMPARTMENT_OCID \
-  --query 'data.items[].{image:"image",highest:"highest-problem-severity",total:"problem-count"}' --output table
-```
-
-### Step 1.5: Analyze the Report
-
-For each finding, note:
-
-- **Severity** (Critical, High, Medium, Low).
-- **CVE ID** and the affected package and version.
-- Whether a **fixed version** is available.
-
-### Step 1.6: Remediate and Rescan
-
-Update the base image and rebuild:
-
-```bash
-cat <<'EOF' > Dockerfile
-FROM nginx:stable
-RUN echo "image security lab - patched" > /usr/share/nginx/html/index.html
-EOF
-docker build -t ${REGISTRY}/${REPO}:v2 .
-docker push ${REGISTRY}/${REPO}:v2
-```
-
-Wait for the new scan and compare the vulnerability counts of `v1` and `v2`.
-
-> A typical policy is to block promotion (or signing) of any image with Critical or High findings.
+**Checkpoint:** `v1` is signed; `v2` is unsigned.
 
 ---
 
-## Part 2: Sign and Verify a Container Image
+# Part 3 - Concept: Enforcing the Use of Signed Images from OCIR
 
-### Step 2.1: Create a Vault and a Signing Key
+Signing alone does nothing unless the cluster **refuses unsigned images**. OKE provides an **image verification policy** (admission control) for **Enhanced** clusters.
 
-**Console:** Identity & Security → **Vault** → create a vault (or use an existing one) → **Keys** → **Create key**:
+How it works:
 
-| Setting | Value |
-|---|---|
-| Protection mode | HSM (or Software) |
-| Key shape: Algorithm | **RSA** |
-| Key shape: Length | 2048 or 4096 bits |
-| Name | `oke-image-signing-key` |
+1. You select one or more Vault keys in the cluster's **Image verification** settings.
+2. When a pod is created, the OKE admission controller checks the image in OCIR.
+3. The image should be referenced by **digest** (`@sha256:...`), not only by tag, for reliable verification.
+4. If a valid signature from a trusted key exists, the pod is admitted; otherwise it is **rejected**.
 
-> The key must be an **asymmetric RSA** key (a symmetric AES key can't sign images). Note the key OCID and the **key version OCID**.
-
-```bash
-export KEY_OCID="ocid1.key.oc1.<region>.xxxx"
-export KEY_VERSION_OCID="ocid1.keyversion.oc1.<region>.xxxx"
-```
-
-You can also list them:
-
-```bash
-oci kms management key list --compartment-id $COMPARTMENT_OCID \
-  --endpoint https://<vault-management-endpoint> --output table
-```
-
-### Step 2.2: Grant Permission to Use the Key
-
-Your user (or group) needs to use the key to sign:
-
-```
-Allow group <iam-group> to use keys in compartment <compartment-name>
-Allow group <iam-group> to manage repos in compartment <compartment-name>
-```
-
-### Step 2.3: Sign the Image
-
-Sign the image by its **OCID** (which is bound to its digest):
-
-```bash
-oci artifacts container image-signature sign-upload \
-  --compartment-id $COMPARTMENT_OCID \
-  --kms-key-id $KEY_OCID \
-  --kms-key-version-id $KEY_VERSION_OCID \
-  --signing-algorithm SHA_256_RSA_PKCS_PSS \
-  --image-id $IMAGE_OCID \
-  --description "Approved release v1"
-```
-
-**Expected:** JSON output describing the new image signature (ID, key, algorithm, image ID).
-
-### Step 2.4: Verify the Signature Exists
-
-```bash
-oci artifacts container image-signature list \
-  --compartment-id $COMPARTMENT_OCID \
-  --image-id $IMAGE_OCID \
-  --output table
-
-oci artifacts container image-signature get --image-signature-id <signature-ocid>
-```
-
-Check that:
-
-- The signature's **key ID** and **key version** match your signing key.
-- The **image ID** is the image you intended to sign.
-
-You can also see the signature in the Console under **Developer Services → Container Registry → repository → image → Signatures**.
-
-### Step 2.5: Confirm the Unsigned Image Has No Signature
-
-```bash
-export UNSIGNED_IMAGE_OCID="ocid1.containerimage.oc1.<region>.yyyy"
-oci artifacts container image-signature list \
-  --compartment-id $COMPARTMENT_OCID --image-id $UNSIGNED_IMAGE_OCID
-```
-
-**Expected:** an empty list.
-
-### Step 2.6: What Happens If the Image Changes?
-
-A signature belongs to one digest. If you rebuild and push `v1` again with different contents, the new digest has **no signature**, so it will fail verification later. This is how signing detects tampering.
+Key points:
+- Works with images stored in **OCIR**
+- Multiple keys can be trusted (for example dev and release keys)
+- Policy can be turned on or off per cluster
+- The cluster needs IAM permission to use the key to verify signatures
 
 ---
 
-## Part 3: Enforcing the Use of Signed Images from OCIR
+# Part 4 - Demo: Enforcing the Use of Signed Images from OCIR
 
-### Overview
+## 4.1 Allow the cluster to use the key
 
-An OKE **image verification policy** makes the cluster check, when a pod is created, that each image has a valid signature made by one of the **trusted keys** you list. Pods whose images are unsigned (or signed by another key) are **rejected**.
+Go to **Identity & Security > Policies > Create Policy** and add:
 
-Prerequisites for enforcement:
-
-- Enhanced cluster.
-- Images stored in OCIR.
-- A signing key in OCI Vault, with the signatures uploaded as in Part 2.
-- An IAM policy that lets the **cluster** use the key to verify.
-
-### Step 3.1: Allow the Cluster to Use the Key
-
-Create this policy (replace OCIDs and names):
-
-```
-Allow any-user to use keys in compartment <compartment-name> where all {request.principal.type = 'cluster', request.principal.id = '<CLUSTER_OCID>'}
+```text
+ALLOW any-user to use keys in compartment <compartment-name>
+  where all {request.principal.type = 'cluster',
+             request.principal.id = '<cluster-ocid>'}
 ```
 
-Without it, the cluster can't read the key and verification fails.
+## 4.2 Enable the image verification policy
 
-### Step 3.2: Create the Image Pull Secret
+1. Go to **Developer Services > Kubernetes Clusters (OKE)** and open your cluster.
+2. Find **Image verification** and click **Edit**.
+3. Select **Enable image verification policy**.
+4. Click **Add key**, then choose the vault, key and `image-signing-key`.
+5. Save and wait until the cluster is **Active**.
 
-So pods can pull from the private OCIR repository:
+## 4.3 Get the image digests
+
+1. Go to **Container Registry > oke-demo/webapp**.
+2. Open `v1` and copy its **digest** (`sha256:...`) - this is the signed image.
+3. Open `v2` and copy its digest - this is the unsigned image.
+
+## 4.4 Create the OCIR pull secret
 
 ```bash
-kubectl create namespace secure-demo
-
-kubectl -n secure-demo create secret docker-registry ocirsecret \
-  --docker-server=${REGION_KEY}.ocir.io \
-  --docker-username="${TENANCY_NS}/${OCI_USER}" \
-  --docker-password='<AUTH_TOKEN>' \
+kubectl create secret docker-registry ocirsecret \
+  --docker-server=<region-key>.ocir.io \
+  --docker-username='<tenancy-namespace>/<username>' \
+  --docker-password='<auth-token>' \
   --docker-email='you@example.com'
 ```
 
-### Step 3.3: Deploy Both Images *Before* Enforcement (Baseline)
+## 4.5 Test 1 - Deploy the SIGNED image (expected: success)
 
-Confirm that both images run when no policy exists. Using the **digest** reference is the most reliable way to make sure the signed image is the one that is checked:
+`signed-pod.yaml`:
 
-```bash
-cat <<EOF > baseline.yaml
+```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: signed-pod
-  namespace: secure-demo
+  name: signed-app
 spec:
+  containers:
+    - name: app
+      image: <region-key>.ocir.io/<tenancy-namespace>/oke-demo/webapp@sha256:<v1-digest>
   imagePullSecrets:
     - name: ocirsecret
-  containers:
-    - name: web
-      image: ${REGISTRY}/${REPO}@${IMAGE_DIGEST}
----
+```
+
+```bash
+kubectl apply -f signed-pod.yaml
+kubectl get pod signed-app
+```
+
+Expected: the pod reaches `Running`.
+
+## 4.6 Test 2 - Deploy the UNSIGNED image (expected: rejected)
+
+`unsigned-pod.yaml`:
+
+```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: unsigned-pod
-  namespace: secure-demo
+  name: unsigned-app
 spec:
+  containers:
+    - name: app
+      image: <region-key>.ocir.io/<tenancy-namespace>/oke-demo/webapp@sha256:<v2-digest>
   imagePullSecrets:
     - name: ocirsecret
-  containers:
-    - name: web
-      image: ${REGISTRY}/${REPO}@${UNSIGNED_DIGEST}
-EOF
-kubectl apply -f baseline.yaml
-kubectl -n secure-demo get pods
 ```
-
-**Expected:** both pods start (`Running`). Delete them before the next step:
 
 ```bash
-kubectl delete -f baseline.yaml
+kubectl apply -f unsigned-pod.yaml
 ```
 
-### Step 3.4: Enable Image Verification on the Cluster
+Expected: the request is **denied** with an error saying the image has no valid signature / failed verification.
 
-**Console:** Cluster details → **Image verification** (or **Edit cluster**) → enable **Image verification** → **Add key** → choose the vault, key and compartment → save.
-
-**CLI (alternative):**
+## 4.7 Clean up
 
 ```bash
-oci ce cluster update --cluster-id $CLUSTER_OCID \
-  --image-policy-config '{"isPolicyEnabled": true, "keyDetails": [{"kmsKeyId": "'$KEY_OCID'"}]}'
+kubectl delete pod signed-app --ignore-not-found
+kubectl delete secret ocirsecret
 ```
 
-Track the update:
+> Do not delete the images or repository until you have finished the scan, signing and enforcement tests, because they need `v1` and `v2`.
 
-```bash
-oci ce cluster get --cluster-id $CLUSTER_OCID \
-  --query 'data.{state:"lifecycle-state",policy:"image-policy-config"}'
-```
-
-Wait for the cluster to return to `ACTIVE`.
-
-> **Rollout tip:** Enable verification in a non-production cluster first. System add-on images in `kube-system` and other namespaces must also meet the policy, depending on how the policy and namespace exemptions are set up. Confirm the current behavior and exemption options in the OKE documentation before enabling it on a shared cluster.
-
-### Step 3.5: Test with the Signed Image (Should Succeed)
-
-```bash
-cat <<EOF > signed.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: signed-pod
-  namespace: secure-demo
-spec:
-  imagePullSecrets:
-    - name: ocirsecret
-  containers:
-    - name: web
-      image: ${REGISTRY}/${REPO}@${IMAGE_DIGEST}
-EOF
-kubectl apply -f signed.yaml
-kubectl -n secure-demo get pod signed-pod
-```
-
-**Expected:** the pod is created and reaches `Running`.
-
-### Step 3.6: Test with the Unsigned Image (Should Be Blocked)
-
-```bash
-cat <<EOF > unsigned.yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: unsigned-pod
-  namespace: secure-demo
-spec:
-  imagePullSecrets:
-    - name: ocirsecret
-  containers:
-    - name: web
-      image: ${REGISTRY}/${REPO}@${UNSIGNED_DIGEST}
-EOF
-kubectl apply -f unsigned.yaml
-```
-
-**Expected:** the request is **denied** with an admission error saying that image signature verification failed (no valid signature from a trusted key). The pod is not created:
-
-```bash
-kubectl -n secure-demo get pods
-```
-
-### Step 3.7: Sign the Second Image and Retry (Optional)
-
-```bash
-oci artifacts container image-signature sign-upload \
-  --compartment-id $COMPARTMENT_OCID \
-  --kms-key-id $KEY_OCID --kms-key-version-id $KEY_VERSION_OCID \
-  --signing-algorithm SHA_256_RSA_PKCS_PSS \
-  --image-id $UNSIGNED_IMAGE_OCID
-
-kubectl apply -f unsigned.yaml
-```
-
-**Expected:** after signing, the same pod is now admitted.
-
-### Step 3.8: Disable or Adjust the Policy (Cleanup / Rollback)
-
-```bash
-oci ce cluster update --cluster-id $CLUSTER_OCID \
-  --image-policy-config '{"isPolicyEnabled": false}'
-```
+In the console:
+1. Cluster > **Image verification** > **Edit** > clear **Enable image verification policy** > Save.
+2. Delete the scan target and recipe.
+3. Delete test images/repository in Container Registry if no longer needed.
+4. Schedule the Vault key for deletion if no longer needed.
 
 ---
 
-## Verification Checklist
+## Troubleshooting
 
-- [ ] The image was pushed to OCIR and the scan report lists vulnerabilities by severity.
-- [ ] A patched image (`v2`) shows fewer findings than `v1`.
-- [ ] A signature exists for the signed image, with the correct key.
-- [ ] The unsigned image has no signatures.
-- [ ] After enabling the policy, the signed image's pod runs.
-- [ ] The unsigned image's pod is rejected, and runs only after signing.
-
-## Troubleshooting Quick Reference
-
-| Problem | Likely Cause | Action |
-|---|---|---|
-| `docker login` fails (unauthorized) | Wrong username format or token | Use `<tenancy-namespace>/<username>` (add the identity-provider prefix for federated users) and a valid auth token |
-| Scan never starts | Missing service policy, or wrong target | Check the two `vulnerability-scanning-service` policies and the target's repository |
-| No scan results for the new image | Scan pending | Wait; confirm the image is in the target's compartment and repository |
-| `sign-upload` returns authorization error | Missing key or repo permissions | Add `use keys` and `manage repos` policies |
-| Signing fails on key type | Symmetric key | Create an **RSA asymmetric** key |
-| Signed pod is rejected | Cluster can't use the key, or the signature is for a different digest/key | Check the cluster principal policy; confirm that the image digest has a signature from the trusted key |
-| Image pull error (`ErrImagePull`) | Missing or wrong pull secret | Recreate `ocirsecret` and reference it in `imagePullSecrets` |
-| System pods fail after enabling the policy | Their images aren't signed by your key | Review the exemption settings and the guidance in the OKE docs; test on a non-production cluster |
-| Tag-based reference fails verification | Tag moved to a different digest | Deploy by **digest** (`image@sha256:...`) |
-
-## Cleanup
-
-```bash
-kubectl delete namespace secure-demo
-
-# Disable enforcement if you don't want to keep it
-oci ce cluster update --cluster-id $CLUSTER_OCID --image-policy-config '{"isPolicyEnabled": false}'
-
-# Optional: remove scan resources
-oci vulnerability-scanning container-scan-target delete --container-scan-target-id <target-ocid> --force
-oci vulnerability-scanning container-scan-recipe delete --container-scan-recipe-id $RECIPE_OCID --force
-
-# Optional: delete demo images and signatures from OCIR via the Console or:
-oci artifacts container image delete --image-id $IMAGE_OCID --force
-oci artifacts container image delete --image-id $UNSIGNED_IMAGE_OCID --force
-```
-
-Schedule the signing key for deletion in the Vault if it was created only for this lab, and remove the IAM policies you added.
+| Symptom | Likely cause / fix |
+|---|---|
+| No scan report appears | Missing VSS IAM policy, or target repository/compartment is wrong |
+| Image verification option is missing | Cluster is Basic; upgrade to Enhanced |
+| Signed image is still rejected | Cluster policy lacks key access, wrong key trusted, or image referenced by tag |
+| `ImagePullBackOff` | Missing or incorrect `imagePullSecrets` |
 
 ## Summary
 
-| Topic | Key Takeaway |
-|---|---|
-| Vulnerability scanning | Create a recipe and a target for an OCIR repository; review CVEs, rebuild, rescan |
-| Signing | Use an asymmetric RSA key in Vault; the signature is bound to the image digest |
-| Enforcement | An OKE image verification policy rejects pods whose images lack a valid signature from a trusted key |
-| Best practice | Scan first, sign only approved images, deploy by digest, and test enforcement on non-production clusters |
+| Stage | Tool | Outcome |
+|---|---|---|
+| Scan | OCI Vulnerability Scanning | Know the CVEs in OCIR images |
+| Sign | OCI Vault + Container Registry | Image has a trusted signature |
+| Verify | Image signatures tab | Confirm the signature exists |
+| Enforce | OKE image verification policy | Only signed images run in the cluster |
