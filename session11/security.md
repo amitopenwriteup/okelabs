@@ -217,6 +217,10 @@ Allow any-user to use keys in compartment lab-oci-sdoh-mvjbz4bk where all {reque
 1. Go to **Container Registry > oke-demo/webapp**.
 2. Open `v1` and copy its **digest** (`sha256:...`) - this is the signed image.
 3. Open `v2` and copy its digest - this is the unsigned image.
+```bash
+docker pull hyd.ocir.io/ax8ybbqiqian/myapp:v1
+docker inspect --format='{{index .RepoDigests 0}}' hyd.ocir.io/ax8ybbqiqian/myapp:v1
+```
 
 ## 4.4 Create the OCIR pull secret
 
