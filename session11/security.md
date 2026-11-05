@@ -86,28 +86,63 @@ allow service vulnerability-scanning-service to read compartments in tenancy
 
 Image signing proves **who** published an image and that it has **not been modified**. The signing key is stored in **OCI Vault**.
 
-## 2.1 Create a Vault and a signing key
+## 2.1 Create a Vault
 
-1. Go to **Identity & Security > Vault** and click **Create Vault** (name: `oke-signing-vault`).
-2. Open the vault and click **Create Key**:
-   - Name: `image-signing-key`
-   - Protection mode: HSM (or Software)
-   - Key shape - Algorithm: **RSA**, Length: **2048 bits**
-3. Wait for the key to become **Enabled**.
+Skip this step if you already have a vault in the compartment you are using.
 
-## 2.2 Sign the image
+1. Open the navigation menu and go to **Identity & Security > Key Management & Secret Management > Vault**.
+2. Select the **compartment** where you want the vault (use the same compartment you will reference in the IAM policy in Part 4).
+3. Click **Create Vault**.
+4. Enter:
+   - **Name:** `oke-signing-vault`
+   - **Make it a virtual private vault:** leave unchecked (not required for this lab)
+5. Click **Create Vault**.
+6. Wait until the vault state changes to **Active**, then click the vault name to open it.
 
-1. Go to **Developer Services > Container Registry** and open `oke-demo/webapp`.
-2. Click the image **v1**.
-3. Open the **Image signatures** tab and click **Create image signature**.
-4. Select:
-   - Vault compartment and **Vault**: `oke-signing-vault`
-   - **Key**: `image-signing-key` and its key version
-   - Signing algorithm: `SHA_256_RSA_PKCS_PSS`
-   - Description: `oke-demo v1 signature`
-5. Click **Create**.
+## 2.2 Create the signing key
 
-## 2.3 Verify the signature
+Image signing requires an **asymmetric RSA key**. Symmetric (AES) keys cannot sign images.
+
+1. Open the vault from step 2.1 and click **Create Key**.
+2. Enter:
+   - **Create in compartment:** the same compartment as the vault
+   - **Name:** `image-signing-key`
+   - **Protection Mode:** HSM (or Software)
+   - **Key Shape: Algorithm:** **RSA**
+   - **Key Shape: Length:** **2048 bits** (3072 or 4096 also work)
+3. Click **Create Key**.
+4. Wait until the key state changes to **Enabled**.
+5. Open the key and note its **vault**, **compartment** and **key version**. You need these in Part 2.3 and Part 4.2.
+
+## 2.3 Sign the image
+
+> The Console only **shows** signatures. You create them with the OCI CLI. The easiest way is **Cloud Shell**, which already has the CLI installed and authenticated.
+
+**Collect three OCIDs**
+
+1. **Image OCID:** Go to **Developer Services > Container Registry**, open `oke-demo/webapp`, click the image **v1**, open **Details** and copy the **OCID**.
+2. **Key OCID:** Go to **Identity & Security > Vault**, open `oke-signing-vault`, click `image-signing-key` and copy the key **OCID**.
+3. **Key version OCID:** On the key page, open **Key versions** and copy the **OCID** of the version (for example version 1).
+4. **Compartment OCID:** Copy the OCID of the compartment that holds the repository.
+
+**Run the signing command**
+
+1. Click the **Cloud Shell** icon (top right of the Console) and wait for the prompt.
+2. Run this as one command, with your OCIDs:
+
+```bash
+oci artifacts container image-signature sign-upload \
+  --compartment-id <compartment-ocid> \
+  --kms-key-id <key-ocid> \
+  --kms-key-version-id <key-version-ocid> \
+  --signing-algorithm SHA_256_RSA_PKCS_PSS \
+  --image-id <image-ocid> \
+  --description "oke-demo v1 signature"
+```
+
+3. Wait for the JSON output that shows the new signature.
+
+## 2.4 Verify the signature
 
 1. Stay on the `v1` image page and open **Image signatures**.
 2. Confirm a signature is listed with the key, key version and algorithm.
@@ -140,21 +175,42 @@ Key points:
 
 ## 4.1 Allow the cluster to use the key
 
-Go to **Identity & Security > Policies > Create Policy** and add:
+1. Find your cluster OCID: **Developer Services > Kubernetes Clusters (OKE)** > your cluster > **OCID** > **Copy**.
+2. Go to **Identity & Security > Policies** and click **Create Policy**.
+3. Create the policy in the root compartment (or in the compartment that holds the key) and add the statement below.
+
+> **Important:** The policy statement must be on a **single line**. Do not wrap it or add line breaks before `where`, or the console fails with `Failed to parse policy due to an issue with token: where`. Also use plain straight quotes (`'`), not curly quotes.
 
 ```text
-ALLOW any-user to use keys in compartment <compartment-name>
-  where all {request.principal.type = 'cluster',
-             request.principal.id = '<cluster-ocid>'}
+Allow any-user to use keys in compartment <compartment-name> where all {request.principal.type = 'cluster', request.principal.id = '<cluster-ocid>'}
 ```
+
+Example with real values:
+
+```text
+Allow any-user to use keys in compartment lab-oci-sdoh-mvjbz4bk where all {request.principal.type = 'cluster', request.principal.id = 'ocid1.cluster.oc1.ap-hyderabad-1.aaaaaaaabjoxbuaq7tdmvcwex5hd5hkeaf2je4dywpxefl6ljcahjc5whipq'}
+```
+
+4. Click **Create** and confirm the policy is listed.
 
 ## 4.2 Enable the image verification policy
 
+**Before you start:** confirm the vault from Part 2.1 is **Active** and `image-signing-key` from Part 2.2 is **Enabled**. If the key is missing, the **Choose a key** dropdown stays empty and shows **Required**.
+
 1. Go to **Developer Services > Kubernetes Clusters (OKE)** and open your cluster.
 2. Find **Image verification** and click **Edit**.
-3. Select **Enable image verification policy**.
-4. Click **Add key**, then choose the vault, key and `image-signing-key`.
-5. Save and wait until the cluster is **Active**.
+3. Turn on **Enable image verification policies on this cluster**.
+4. In the row that appears, select the following in order:
+   1. **Compartment** of the vault
+   2. **Vault:** `oke-signing-vault`
+   3. **Compartment** of the key
+   4. **Key:** `image-signing-key`
+
+   The key field is **Required** and must not be left empty.
+5. (Optional) Click **Add row** to trust additional vault and key pairs, for example a separate release key.
+6. Click **Save** and wait until the cluster is **Active**.
+
+> If **Choose a key** shows nothing, check that the key compartment in the third dropdown matches the compartment where `image-signing-key` was created, and that the key state is **Enabled**.
 
 ## 4.3 Get the image digests
 
@@ -229,7 +285,7 @@ kubectl delete secret ocirsecret
 > Do not delete the images or repository until you have finished the scan, signing and enforcement tests, because they need `v1` and `v2`.
 
 In the console:
-1. Cluster > **Image verification** > **Edit** > clear **Enable image verification policy** > Save.
+1. Cluster > **Image verification** > **Edit** > turn off **Enable image verification policies on this cluster** > Save.
 2. Delete the scan target and recipe.
 3. Delete test images/repository in Container Registry if no longer needed.
 4. Schedule the Vault key for deletion if no longer needed.
@@ -244,6 +300,9 @@ In the console:
 | Image verification option is missing | Cluster is Basic; upgrade to Enhanced |
 | Signed image is still rejected | Cluster policy lacks key access, wrong key trusted, or image referenced by tag |
 | `ImagePullBackOff` | Missing or incorrect `imagePullSecrets` |
+| `Failed to parse policy ... token: where` | Policy statement was split over several lines; paste it as one line with straight quotes |
+| **Choose a key** dropdown is empty | Key not created yet, key not **Enabled**, or wrong key compartment selected |
+| Key cannot be used for signing | Key is symmetric (AES); create an **RSA** key instead |
 
 ## Summary
 
