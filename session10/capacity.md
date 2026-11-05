@@ -45,10 +45,10 @@ Create a capacity reservation, allow OKE to use it, create a managed node pool t
 | Compartment | Your lab compartment |
 | Availability domain | AD-1 (must match the node pool's AD) |
 | Fault domain (optional) | Leave unspecified |
-| Reservation configuration → Shape | `VM.Standard.E4.Flex` |
+| Reservation configuration → Shape | `VM.Standard.E6.Flex` |
 | OCPUs | 1 |
 | Memory (GB) | 8 |
-| Reserved instance count | 3 |
+| Reserved instance count | 1 |
 
 5. Click **Create** and wait until the state is **Active**.
 
@@ -85,7 +85,7 @@ Allow any-user to use compute-capacity-reservations in compartment <compartment-
 | Kubernetes version | Same as the control plane |
 | Availability domain | **AD-1** (the reservation's AD) |
 | Worker node subnet | Your existing worker subnet |
-| Shape | `VM.Standard.E4.Flex` (must match the reservation) |
+| Shape | `VM.Standard.E6.Flex` (must match the reservation) |
 | OCPUs / Memory | 1 OCPU / 8 GB (must match the reservation) |
 | Image | Oracle Linux (OKE image) |
 | Number of nodes | 2 |
