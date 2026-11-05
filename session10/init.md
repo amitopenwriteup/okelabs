@@ -174,7 +174,7 @@ Expected results:
 2. In the console, open **Node pools → pool-cloudinit → Edit**.
 3. Replace the initialization script under **Show advanced options**, then click **Save changes**.
 4. Confirm that the existing node is unchanged (the new setting is absent).
-5. Apply the change to all nodes by using **Cycle nodes** on the node pool (set maximum surge to `1` and maximum unavailable to `0`), or by scaling up and deleting the old node.
+5. Apply the change to all nodes by using **Cycle nodes** on the node pool (set maximum addional node to `0` and maximum unavailable to `1`), or by scaling up and deleting the old node.
 6. Re-run the verification checks on a new node, and confirm the new setting:
 
 ```bash
