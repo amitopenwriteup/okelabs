@@ -16,10 +16,62 @@
 - You are either a **tenancy administrator** or already hold the Kubernetes RBAC `cluster-admin` cluster role on the cluster. You need this to create roles and bindings.
 - A second, **non-administrator** OCI IAM user to receive the permissions (for example `jdoe@acme.com`). If you cannot create users, ask your tenancy admin for one.
 - An OCI IAM group that contains that user (for example `oke-pod-readers`)
+- An identity domain to hold the user and group. You can use the **Default** domain, or create a new one in Part 0.
 
 ---
 
-# Part 0 - Concept: How OKE Access Control Works
+# Part 0 - Setup: Create an Identity Domain
+
+An **identity domain** holds the users, groups and sign-in settings for your OCI tenancy. Your tenancy already has a **Default** domain. Skip this part if you want to use it, or if a domain with the users and groups you need already exists.
+
+## 0.1 Start the Create domain wizard
+
+1. Open the navigation menu and go to **Identity & Security > Domains**.
+2. Select the **compartment** where the domain should live (for example your lab compartment).
+3. Click **Create domain**.
+
+## 0.2 Enter the domain details (wizard step 1)
+
+1. **Display name:** `oke-lab-domain` (a unique name of your choice). This is required.
+2. **Description:** `Domain for the OKE RBAC lab`. This is required.
+3. **Domain type:** choose one of the tiles.
+
+| Domain type | What it gives you |
+|---|---|
+| **Free** | Authentication and access management for Oracle Cloud services, with limits: 2000 users, limited feature support, 2 non-Oracle apps and 3 external identity providers |
+| **Oracle Apps Premium** | Access management for all your Oracle apps, up to 6 non-Oracle apps, unlimited external identity providers |
+| **Premium** | Full enterprise identity and access management with all features |
+| **External User** / **External Active User** | Identity storage and access management for customer-facing (external) users |
+
+For this lab choose **Free**. It is enough for a few users and groups, and the other types are only needed for extra features or higher limits. Which types are available can depend on your tenancy and any charges that apply, so check the tile details before you pick a paid type.
+
+## 0.3 Create the domain administrator
+
+1. Keep **Create an administrative user for this domain** turned on.
+2. Enter:
+   - **Administrator's first name:** your first name
+   - **Administrator's last name:** your last name (required)
+   - **Administrator's username/email:** a valid email address you can read (required). The activation message is sent here.
+3. Keep **Use the email address as the username** turned on, unless you need a different username.
+
+## 0.4 Remote region disaster recovery (wizard step 2)
+
+1. Leave **Enable remote region disaster recovery** turned **off** for this lab.
+2. If you see a warning that the tenancy is not subscribed to the disaster recovery region (for example India West (Mumbai)), you can ignore it while the toggle is off. To use this feature you would first subscribe the tenancy to that region.
+
+## 0.5 Review and create
+
+1. Click **Next**, then review the name, type, administrator and disaster recovery settings.
+2. Click **Create domain**.
+3. Wait until the domain state is **Active**. This can take a few minutes.
+4. Check the email inbox of the administrator you entered and follow the activation link to set a password.
+5. Open the domain from **Identity & Security > Domains** and note its **domain name**. You use it in the IAM policy in step 1.2.
+
+**Checkpoint:** An **Active** identity domain exists, and you can open it in the Console.
+
+---
+
+# Concept: How OKE Access Control Works
 
 OKE uses two layers of access control, and a user needs both to work with a cluster:
 
@@ -47,7 +99,7 @@ In this demo, a non-administrator user is given `cluster-admin` on the cluster.
 
 Skip any item that already exists.
 
-1. Go to **Identity & Security > Domains**, open your domain, and click **Users > Create user**. Enter the user details (for example `jdoe@acme.com`) and click **Create**.
+1. Go to **Identity & Security > Domains**, open your domain (the **Default** domain, or `oke-lab-domain` from Part 0), and click **Users > Create user**. Enter the user details (for example `jdoe@acme.com`) and click **Create**.
 2. Open the user and **copy the user OCID** (`ocid1.user.oc1..`). Keep it for later.
 3. Go to **Groups > Create group**, name it `oke-pod-readers`, and click **Create**.
 4. Open the group, click **Assign user to group**, and add the user.
@@ -63,7 +115,7 @@ Skip any item that already exists.
 Allow group oke-pod-readers to use clusters in compartment <compartment-name>
 ```
 
-> If your group lives in a non-default identity domain, write the group as `'<domain-name>'/oke-pod-readers`.
+> If your group lives in a non-default identity domain, such as the one you created in Part 0, write the group as `'oke-lab-domain'/oke-pod-readers`. Use your own domain name inside the quotes.
 
 4. Click **Create**.
 
