@@ -155,8 +155,6 @@ spec:
       labels:
         app: scale-test
     spec:
-      nodeSelector:
-        name: pool-autoscale
       containers:
       - name: pause
         image: registry.k8s.io/pause:3.9
