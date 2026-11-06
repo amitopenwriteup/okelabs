@@ -1,6 +1,6 @@
 # Lab: Autoscaling Kubernetes Node Pools with the Cluster Autoscaler in OKE
 
-**Estimated time:** 30 minutes
+**Estimated time:** 60–75 minutes
 **Level:** Intermediate
 
 > **Note:** OCI Console labels, add-on configuration keys and policy syntax change over time. Items most likely to differ are marked **(verify)**.
@@ -121,11 +121,241 @@ For more than one pool, separate the entries with commas:
 
 ```bash
 kubectl get pods -n kube-system | grep cluster-autoscaler
+kubectl logs -n kube-system deployment/cluster-autoscaler --tail=50
 ```
 
+Expected: the autoscaler pod is `Running` and the logs show it discovering the node pool, with no authorization errors.
 
 > **Important:** Once a pool is managed by the autoscaler, do not resize it manually. The pool size must stay within the `min`–`max` range.
 
 ---
 
+## Step 4 – Trigger a Scale-Up
+
+1. Record the current node count:
+
+```bash
+kubectl get nodes -l name=pool-autoscale
+```
+
+2. Create `scale-test.yaml`. The requests are large enough that six replicas will not fit on one small node:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scale-test
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: scale-test
+  template:
+    metadata:
+      labels:
+        app: scale-test
+    spec:
+      nodeSelector:
+        name: pool-autoscale
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            cpu: 400m
+            memory: 1Gi
+```
+
+3. Apply it and observe:
+
+```bash
+kubectl apply -f scale-test.yaml
+kubectl get pods -l app=scale-test -o wide
+kubectl get nodes -l name=pool-autoscale --watch
+```
+
+4. In another Cloud Shell tab, follow the autoscaler logs:
+
+```bash
+kubectl -n kube-system logs deployment/cluster-autoscaler -f | grep -i "scale"
+```
+
+Expected sequence:
+
+| Time | What you see |
+|---|---|
+| Immediately | Some `scale-test` pods are `Pending` |
+| Within about 1–2 minutes | Autoscaler logs a scale-up decision for `pool-autoscale` |
+| A few minutes later | New nodes appear and become `Ready` |
+| After nodes join | Pending pods move to `Running` |
+
+5. In the console, open **Node pools → pool-autoscale → Work requests** to see the resize request.
+
+To confirm why pods are pending:
+
+```bash
+kubectl describe pod <pending-pod-name>
+```
+
+Look for `Insufficient cpu` or `Insufficient memory` under **Events**.
+
+---
+
+## Step 5 – Trigger a Scale-Down
+
+1. Remove the workload:
+
+```bash
+kubectl delete deployment scale-test
+```
+
+2. Watch the nodes:
+
+```bash
+kubectl get nodes -l name=pool-autoscale --watch
+```
+
+3. Follow the logs for scale-down messages:
+
+```bash
+kubectl -n kube-system logs deployment/cluster-autoscaler -f | grep -i "unneeded\|scale down\|removing"
+```
+
+Expected: after the underutilization delay (commonly around 10 minutes by default), idle nodes are drained and removed until the pool returns to its minimum size of 1.
+
+---
+
+## Step 6 – Combine with the Horizontal Pod Autoscaler
+
+1. Confirm metrics-server is running:
+
+```bash
+kubectl get deployment metrics-server -n kube-system
+kubectl top nodes
+```
+
+If it is missing, enable it from the cluster's **Add-ons** page or install it from the Kubernetes metrics-server release manifest.
+
+2. Create `php-apache.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-apache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: php-apache
+  template:
+    metadata:
+      labels:
+        run: php-apache
+    spec:
+      nodeSelector:
+        name: pool-autoscale
+      containers:
+      - name: php-apache
+        image: registry.k8s.io/hpa-example
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
+          limits:
+            cpu: 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: php-apache
+spec:
+  selector:
+    run: php-apache
+  ports:
+  - port: 80
+```
+
+3. Apply it and create an HPA:
+
+```bash
+kubectl apply -f php-apache.yaml
+kubectl autoscale deployment php-apache --cpu-percent=50 --min=1 --max=12
+kubectl get hpa
+```
+
+4. Generate load (Terminal 1):
+
+```bash
+kubectl run load-generator --image=busybox:1.28 --restart=Never -it --rm -- \
+  /bin/sh -c "while true; do wget -q -O- http://php-apache; done"
+```
+
+5. Watch the chain react (Terminal 2):
+
+```bash
+kubectl get hpa php-apache --watch
+kubectl get pods -l run=php-apache
+kubectl get nodes -l name=pool-autoscale
+```
+
+Expected chain: CPU rises → HPA increases replicas → some pods go `Pending` → Cluster Autoscaler adds nodes → pods schedule.
+
+6. Stop the load with `Ctrl+C`. After the stabilization windows, replicas drop first, then idle nodes are removed.
+
+---
+
+## Step 7 – Protect a Node or Pod from Scale-Down (Optional)
+
+```bash
+# Prevent a specific node from being removed
+kubectl annotate node <node-name> cluster-autoscaler.kubernetes.io/scale-down-disabled=true
+
+# Prevent a pod from being evicted during scale-down
+kubectl annotate pod <pod-name> cluster-autoscaler.kubernetes.io/safe-to-evict=false
+```
+
+Remove the node annotation afterwards:
+
+```bash
+kubectl annotate node <node-name> cluster-autoscaler.kubernetes.io/scale-down-disabled-
+```
+
+---
+
+## Validation Checklist
+
+- [ ] Node pool `pool-autoscale` created on `VM.Standard.E5.Flex`
+- [ ] IAM policy for the autoscaler created
+- [ ] Cluster Autoscaler add-on is **Active** and its pod is `Running`
+- [ ] Node count increased when pods were `Pending`
+- [ ] Node count decreased after the workload was deleted
+- [ ] HPA and Cluster Autoscaler worked together
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| No scale-up, pods `Pending` | Autoscaler unauthorized | Check logs for 401/403; review the dynamic group and policies |
+| Pods `Pending` but no scale-up | Pod request larger than any node; `nodeSelector` or taint mismatch; pool not listed in the `nodes` value | Reduce requests, fix selectors, confirm the pool OCID and min/max |
+| Pods have no requests | CA only sees requests | Add `resources.requests` to the pods |
+| Scale-up fails with capacity error | No host capacity in the AD | Use a capacity reservation or add another AD to the pool |
+| Nodes do not scale down | PodDisruptionBudgets, local storage, `safe-to-evict=false`, system pods, or the delay has not elapsed | Check logs for "not removed" reasons and wait longer |
+| Pool size exceeds `max` | Pool also resized manually | Let the autoscaler own the pool size |
+| Autoscaler pod crash-looping | Wrong add-on config | Review the `nodes` value format and the pod logs |
+
+---
+
+## Clean-up
+
+```bash
+kubectl delete deployment scale-test php-apache --ignore-not-found
+kubectl delete service php-apache --ignore-not-found
+kubectl delete hpa php-apache --ignore-not-found
+kubectl delete pod load-generator --ignore-not-found
+```
 
